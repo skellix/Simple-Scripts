@@ -7,15 +7,13 @@
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
-    <orderEntry type="module-library" exported="">
+    <orderEntry type="module-library">
       <library>
         <CLASSES>
-          <root url="jar://$MODULE_DIR$/../../asm-4.0-bin/asm-4.0/lib/all/asm-all-4.0.jar!/" />
+          <root url="jar://$MODULE_DIR$/include/asm-all-4.0.jar!/" />
         </CLASSES>
         <JAVADOC />
-        <SOURCES>
-          <root url="jar://$MODULE_DIR$/../../asm-4.0-bin/asm-4.0/src.zip!/" />
-        </SOURCES>
+        <SOURCES />
       </library>
     </orderEntry>
   </component>

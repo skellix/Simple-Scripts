@@ -6,7 +6,7 @@
         <element id="file-copy" path="$PROJECT_DIR$/META-INF/MANIFEST.MF" />
       </element>
       <element id="module-output" name="Simple Scripts" />
-      <element id="extracted-dir" path="$PROJECT_DIR$/../../asm-4.0-bin/asm-4.0/lib/all/asm-all-4.0.jar" path-in-jar="/" />
+      <element id="extracted-dir" path="$PROJECT_DIR$/include/asm-all-4.0.jar" path-in-jar="/" />
     </root>
   </artifact>
 </component>
