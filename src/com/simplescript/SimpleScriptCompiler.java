@@ -900,7 +900,7 @@ public class SimpleScriptCompiler implements Opcodes {
 		} else if (typeCanonicalName.equals("double[]")) {
 			typeCanonicalName = "[D";
 		} else if (typeCanonicalName.endsWith("]")) {
-			typeCanonicalName = "[L"+typeCanonicalName.replace('.', '/')+';';
+			typeCanonicalName = "[L"+typeCanonicalName.replace('.', '/').substring(0, typeCanonicalName.indexOf('['))+';';
 		} else {
 			typeCanonicalName = 'L'+typeCanonicalName.replace('.', '/')+';';
 		}
@@ -1096,9 +1096,9 @@ public class SimpleScriptCompiler implements Opcodes {
 				if (matcher.find()) {
 					String permission = matcher.group(1);
 					String visibility = matcher.group(2);
-					String returnType = matcher.group(3);
+					String returnType = doTypeCheck(matcher.group(3));
 					String name = matcher.group(4);
-					String params = matcher.group(5);
+					String params = doParamTypeCheck(matcher.group(5));
 					index.set(
 							(index.get()-line.length())+matcher.regionStart()+(matcher.group(0).length())-1
 					);
@@ -1112,6 +1112,17 @@ public class SimpleScriptCompiler implements Opcodes {
 				//break;
 			//}
 		}
+	}
+
+	private String doParamTypeCheck(String params) {
+		String out = "";
+		String[] types = params.substring(1, params.length()-1).split("\\s+,\\s+");
+		for (String type : types) {
+			if (! type.equals("")) {
+				out += doTypeCheck(type);
+			}
+		}
+		return '('+out+')';
 	}
 
 	/**
