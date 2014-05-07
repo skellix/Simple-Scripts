@@ -67,6 +67,7 @@ public class SimpleScriptCompiler implements Opcodes {
 		methodVisitor.visitCode();
 		methodVisitor.visitVarInsn(ALOAD, 0);
 		methodVisitor.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V");
+		LinkedHashMap<String, String> imports = new LinkedHashMap<String, String>();
 		LinkedHashMap<String, Integer> variables = new LinkedHashMap<String, Integer>();
 		LinkedHashMap<String, String> types = new LinkedHashMap<String, String>();
 		Stack<String> stack = new Stack<String>();
@@ -78,7 +79,7 @@ public class SimpleScriptCompiler implements Opcodes {
 			);
 			tabSize ++;
 		}
-		getbody(classWriter, methodVisitor, name, variables, types, stack, labels, blocks, index, source);
+		getbody(classWriter, methodVisitor, name, imports, variables, types, stack, labels, blocks, index, source);
 		if (Main.debug) {
 			System.out.println(
 					"}"
@@ -102,11 +103,11 @@ public class SimpleScriptCompiler implements Opcodes {
 	 * @param index current source code index
 	 * @param source the source code
 	 */
-	private void getbody(ClassWriter classWriter, MethodVisitor methodVisitor, String className, LinkedHashMap<String, Integer> variables, LinkedHashMap<String, String> types, Stack<String> stack, LinkedHashMap<String, Label> labels, Stack<Label> blocks, AtomicInteger index, String source) {
+	private void getbody(ClassWriter classWriter, MethodVisitor methodVisitor, String className, LinkedHashMap<String, String> imports, LinkedHashMap<String, Integer> variables, LinkedHashMap<String, String> types, Stack<String> stack, LinkedHashMap<String, Label> labels, Stack<Label> blocks, AtomicInteger index, String source) {
 		while (index.get() < source.length()) {
 			String line = getUntil("\n|\\}", source, index);
 			index.getAndIncrement();
-			if (! preArgsCheck(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, line, index, source)) {
+			if (! preArgsCheck(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, line, index, source)) {
 				if (index.get() < source.length() && source.charAt(index.get()) == '}') {
 					line = "} " + line;
 					index.getAndIncrement();
@@ -136,7 +137,7 @@ public class SimpleScriptCompiler implements Opcodes {
 							if (Main.debug && ! arg.equals("")) {
 								System.out.println("{");
 							}
-							getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0), newSrc);
+							getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), newSrc);
 							System.out.print(times(".   ", tabSize - 1) + "} = ");
 							tabSize --;
 						} else if (arg.equals("endl")) {
@@ -185,12 +186,12 @@ public class SimpleScriptCompiler implements Opcodes {
 									tabSize ++;
 								}
 								if (varArgs.contains("(") && varArgs.contains(")")) {
-									getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0), varName);
+									getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), varName);
 									String[] varTypes = varArgs.substring(varArgs.indexOf('(')+1, varArgs.lastIndexOf(')')).split("\\,\\s*");
 									ArrayList<String> argTypes = new ArrayList<String>();
 									for (int j = varTypes.length-1 ; j >= 0 ; j --) {
 										if (! varTypes[j].equals("")) {
-											getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0), varTypes[j]);
+											getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), varTypes[j]);
 											argTypes.add(stack.peek());
 										}
 									}
@@ -219,7 +220,7 @@ public class SimpleScriptCompiler implements Opcodes {
 															c1 = getClassForType(argTypeName);
 															Class c2 = null;
 															String typeCanonicalName = parameterTypes[j].getCanonicalName();
-															typeCanonicalName = doTypeCheck(typeCanonicalName);
+															typeCanonicalName = doTypeCheck(typeCanonicalName, imports);
 															c2 = getClassForType(typeCanonicalName);
 															if (c2.isAssignableFrom(c1)) {
 																thisArgsString += typeCanonicalName;
@@ -267,7 +268,7 @@ public class SimpleScriptCompiler implements Opcodes {
 																c1 = getClassForType(argTypeName);
 																Class c2 = null;
 																String typeCanonicalName = parameterTypes[j].getCanonicalName();
-																typeCanonicalName = doTypeCheck(typeCanonicalName);
+																typeCanonicalName = doTypeCheck(typeCanonicalName, imports);
 																c2 = getClassForType(typeCanonicalName);
 																if (c2.isAssignableFrom(c1)) {
 																	thisArgsString += typeCanonicalName;
@@ -278,7 +279,7 @@ public class SimpleScriptCompiler implements Opcodes {
 																	} else {
 																		returnType = 'L'+returnType+';';
 																	}*/
-																	returnType = doTypeCheck(returnType);
+																	returnType = doTypeCheck(returnType, imports);
 																}
 															}
 														}
@@ -291,7 +292,7 @@ public class SimpleScriptCompiler implements Opcodes {
 											}
 										}
 										if (numberOfParams != -1) {
-											getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0),
+											getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
 													invokeType+':'+arg+'.'+methodName+'('+argsString+')'+returnType
 											);
 										} else {
@@ -301,7 +302,7 @@ public class SimpleScriptCompiler implements Opcodes {
 										e.printStackTrace();
 									}
 								} else {
-									getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0),
+									getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
 											arg + '.' + varArgs
 									);
 								}
@@ -388,7 +389,7 @@ public class SimpleScriptCompiler implements Opcodes {
 							}
 							//index.getAndIncrement();
 							Label block = blocks.pop();
-							getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, index, source);
+							getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, index, source);
 							methodVisitor.visitLabel(block);
 							break;
 						} else if (arg.equals("get")) {
@@ -465,6 +466,9 @@ public class SimpleScriptCompiler implements Opcodes {
 							if (type.contains(".")) {
 								String method = type.substring(type.indexOf('.')+1);
 								type = type.substring(0,type.indexOf('.'));
+								if (imports.containsKey(type)) {
+									type = imports.get(type);
+								}
 								String dup = "";
 								if (method.startsWith("<init>")) {
 									dup = "DUP";
@@ -474,7 +478,7 @@ public class SimpleScriptCompiler implements Opcodes {
 									tabSize ++;
 								}
 								String data = type+'.'+method+' '+dup+" ::"+type;
-								getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0),
+								getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
 										type+'.'+method+' '+dup+" ::"+type
 								);
 								if (Main.debug) {
@@ -559,7 +563,7 @@ public class SimpleScriptCompiler implements Opcodes {
 									ArrayList<String> argTypes = new ArrayList<String>();
 									for (int j = varTypes.length-1 ; j >= 0 ; j --) {
 										if (! varTypes[j].equals("")) {
-											getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0), varTypes[j]);
+											getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), varTypes[j]);
 											argTypes.add(stack.peek());
 										}
 									}
@@ -690,7 +694,7 @@ public class SimpleScriptCompiler implements Opcodes {
 																} else {
 																	returnType = 'L'+returnType.replace('.', '/')+';';
 																}*/
-																returnType = doTypeCheck(returnType);
+																returnType = doTypeCheck(returnType, imports);
 															}
 														}
 													}
@@ -702,7 +706,7 @@ public class SimpleScriptCompiler implements Opcodes {
 											}
 										}
 										if (numberOfParams != -1) {
-											getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0),
+											getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
 													invokeType+':'+arg+'.'+methodName+'('+argsString+')'+returnType
 											);
 										} else {
@@ -712,7 +716,7 @@ public class SimpleScriptCompiler implements Opcodes {
 										e.printStackTrace();
 									}
 								} else {
-									getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0),
+									getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
 											arg + '.' + varArgs
 									);
 								}
@@ -721,7 +725,7 @@ public class SimpleScriptCompiler implements Opcodes {
 									System.out.print(times(".   ", tabSize)+"} = ");
 								}
 							} else {
-								getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0),
+								getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
 										className+'.'+arg
 								);
 							}
@@ -745,6 +749,9 @@ public class SimpleScriptCompiler implements Opcodes {
 						} else if (arg.contains(".")) {
 							String name = arg.substring(arg.indexOf('.')+1);
 							String type = arg.substring(0, arg.indexOf('.'));
+							if (imports.containsKey(type)) {
+								type = imports.get(type);
+							}
 							try {
 								Class c = Class.forName(type.replace('/', '.'));
 								Field field = c.getField(name);
@@ -864,7 +871,7 @@ public class SimpleScriptCompiler implements Opcodes {
 		return c2;
 	}
 
-	private String doTypeCheck(String typeCanonicalName) {
+	private String doTypeCheck(String typeCanonicalName, LinkedHashMap<String, String> imports) {
 		if (typeCanonicalName.equals("void")) {
 			typeCanonicalName = "V";
 		} else if (typeCanonicalName.equals("boolean")) {
@@ -900,9 +907,21 @@ public class SimpleScriptCompiler implements Opcodes {
 		} else if (typeCanonicalName.equals("double[]")) {
 			typeCanonicalName = "[D";
 		} else if (typeCanonicalName.endsWith("]")) {
-			typeCanonicalName = "[L"+typeCanonicalName.replace('.', '/').substring(0, typeCanonicalName.indexOf('['))+';';
+			String modName = typeCanonicalName.substring(0,
+					typeCanonicalName.indexOf(' ') != -1? typeCanonicalName.indexOf(' '):
+							typeCanonicalName.indexOf('[')
+			);
+			if (imports.containsKey(modName)) {
+				typeCanonicalName = "[L"+imports.get(modName)+';';
+			} else {
+				typeCanonicalName = "[L"+typeCanonicalName.replace('.', '/').substring(0, typeCanonicalName.indexOf('['))+';';
+			}
 		} else {
-			typeCanonicalName = 'L'+typeCanonicalName.replace('.', '/')+';';
+			if (imports.containsKey(typeCanonicalName)) {
+				typeCanonicalName = 'L'+imports.get(typeCanonicalName)+';';
+			} else {
+				typeCanonicalName = 'L'+typeCanonicalName.replace('.', '/')+';';
+			}
 		}
 		return typeCanonicalName;
 	}
@@ -1046,7 +1065,7 @@ public class SimpleScriptCompiler implements Opcodes {
 	 * @param source
 	 * @return
 	 */
-	private boolean preArgsCheck(ClassWriter classWriter, MethodVisitor methodVisitor, String className, LinkedHashMap<String, Integer> variables, LinkedHashMap<String, String> types, Stack<String> stack, LinkedHashMap<String, Label> labels, Stack<Label> blocks, String line, AtomicInteger index, String source) {
+	private boolean preArgsCheck(ClassWriter classWriter, MethodVisitor methodVisitor, String className, LinkedHashMap<String, String> imports, LinkedHashMap<String, Integer> variables, LinkedHashMap<String, String> types, Stack<String> stack, LinkedHashMap<String, Label> labels, Stack<Label> blocks, String line, AtomicInteger index, String source) {
 		Matcher matcher = Pattern.compile(
 				"^\\s*import\\s+([^\\s]+)"
 		).matcher(line);
@@ -1064,62 +1083,80 @@ public class SimpleScriptCompiler implements Opcodes {
 									) + "\n}"
 					);
 				} else {
-					Main.error("Import file '"+frostyFile.getAbsolutePath()+"' could not be found!");
+					try {
+						Class c = Class.forName(name.replace('/', '.'), true, Thread.currentThread().getContextClassLoader());
+					} catch (ClassNotFoundException e1) {
+						Main.error("Import file '" + frostyFile.getAbsolutePath() + "' could not be found!");
+					}
 				}
 			}
+			String shortName;
+			try {
+				shortName = name.substring(name.lastIndexOf('/')+1);
+			} catch (Exception e) {
+				shortName = name;
+			}
+			imports.put(shortName, name);
 			return true;
 		} else {
 			matcher = Pattern.compile(
-					"^\\s*for\\s*\\(([^\\;]+)\\;([^\\;]+)\\;([^\\;]+)\\)\\s*\\{"
+					"^\\s*import\\s+([^\\s]+)"
 			).matcher(line);
 			if (matcher.find()) {
-				String firstPart = matcher.group(1);
-				String forCheck = matcher.group(2);
-				String lastPart = matcher.group(3);
-				Label forStartLabel = new Label();
-				Label forEndLabel = new Label();
-				blocks.push(forEndLabel);
-				tabSize ++;
-				getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0), firstPart);
-				methodVisitor.visitLabel(forStartLabel);
-				getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0), forCheck);
-				getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, index, source);
-				getbody(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, new AtomicInteger(0), lastPart);
-				methodVisitor.visitJumpInsn(GOTO, forStartLabel);
-				methodVisitor.visitLabel(forEndLabel);
-				tabSize --;
 				return true;
 			} else {
 				matcher = Pattern.compile(
-						"^\\s*func\\s+(public|private|protected|)\\s*(static|)\\s*(|[^\\s]+)\\s*([^\\s\\(]+)\\s*(\\([^\\)]*\\))\\s*\\{"
+						"^\\s*for\\s*\\(([^\\;]+)\\;([^\\;]+)\\;([^\\;]+)\\)\\s*\\{"
 				).matcher(line);
 				if (matcher.find()) {
-					String permission = matcher.group(1);
-					String visibility = matcher.group(2);
-					String returnType = doTypeCheck(matcher.group(3));
-					String name = matcher.group(4);
-					String params = doParamTypeCheck(matcher.group(5));
-					index.set(
-							(index.get()-line.length())+matcher.regionStart()+(matcher.group(0).length())-1
-					);
-					makeFunc(classWriter, className, permission, visibility, returnType, name, params, variables, index, source);
+					String firstPart = matcher.group(1);
+					String forCheck = matcher.group(2);
+					String lastPart = matcher.group(3);
+					Label forStartLabel = new Label();
+					Label forEndLabel = new Label();
+					blocks.push(forEndLabel);
+					tabSize ++;
+					getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), firstPart);
+					methodVisitor.visitLabel(forStartLabel);
+					getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), forCheck);
+					getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, index, source);
+					getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), lastPart);
+					methodVisitor.visitJumpInsn(GOTO, forStartLabel);
+					methodVisitor.visitLabel(forEndLabel);
+					tabSize --;
 					return true;
 				} else {
-					return false;
+					matcher = Pattern.compile(
+							"^\\s*func\\s+(public|private|protected|)\\s*(static|)\\s*(|[^\\s]+)\\s*([^\\s\\(]+)\\s*(\\([^\\)]*\\))\\s*\\{"
+					).matcher(line);
+					if (matcher.find()) {
+						String permission = matcher.group(1);
+						String visibility = matcher.group(2);
+						String returnType = doTypeCheck(matcher.group(3), imports);
+						String name = matcher.group(4);
+						String params = doParamTypeCheck(matcher.group(5), imports);
+						index.set(
+								(index.get()-line.length())+matcher.regionStart()+(matcher.group(0).length())-1
+						);
+						makeFunc(classWriter, className, permission, visibility, returnType, name, params, imports, variables, index, source);
+						return true;
+					} else {
+						return false;
+					}
 				}
-			}
 			//if (index.get() >= source.length() || source.charAt(index.get()) == '}') {
 				//break;
 			//}
+			}
 		}
 	}
 
-	private String doParamTypeCheck(String params) {
+	private String doParamTypeCheck(String params, LinkedHashMap<String, String> imports) {
 		String out = "";
 		String[] types = params.substring(1, params.length()-1).split("\\s+,\\s+");
 		for (String type : types) {
 			if (! type.equals("")) {
-				out += doTypeCheck(type);
+				out += doTypeCheck(type, imports);
 			}
 		}
 		return '('+out+')';
@@ -1138,7 +1175,7 @@ public class SimpleScriptCompiler implements Opcodes {
 	 * @param index
 	 * @param source
 	 */
-	private void makeFunc(ClassWriter classWriter, String className, String permission, String visibility, String returnType, String name, String params, LinkedHashMap<String, Integer> classVariables, AtomicInteger index, String source) {
+	private void makeFunc(ClassWriter classWriter, String className, String permission, String visibility, String returnType, String name, String params, LinkedHashMap<String, String> imports, LinkedHashMap<String, Integer> classVariables, AtomicInteger index, String source) {
 		MethodVisitor methodVisitor = classWriter.visitMethod(
 				(
 						permission.equals("public")? ACC_PUBLIC:
@@ -1170,7 +1207,7 @@ public class SimpleScriptCompiler implements Opcodes {
 			);
 			tabSize ++;
 		}
-		getbody(classWriter, methodVisitor,className, variables, types, stack, labels, blocks, index, source);
+		getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, index, source);
 		if (Main.debug) {
 			tabSize --;
 			System.out.println(
