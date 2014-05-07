@@ -67,7 +67,7 @@ public class SimpleScriptCompiler implements Opcodes {
 		methodVisitor.visitCode();
 		methodVisitor.visitVarInsn(ALOAD, 0);
 		methodVisitor.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V");
-		LinkedHashMap<String, String> imports = new LinkedHashMap<String, String>();
+		LinkedHashMap<String, String> imports = new DefaultFrostyImports().getImports();
 		LinkedHashMap<String, Integer> variables = new LinkedHashMap<String, Integer>();
 		LinkedHashMap<String, String> types = new LinkedHashMap<String, String>();
 		Stack<String> stack = new Stack<String>();
