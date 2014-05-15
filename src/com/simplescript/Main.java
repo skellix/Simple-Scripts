@@ -78,7 +78,7 @@ public class Main {
 		if (input != "") {
 			source = input.substring(input.lastIndexOf(File.separatorChar)+1).split("\\.")[0]+"() {\n" +
 						new SimpleScriptUtils().read(input) +
-					"\n}";
+					"\n}\n";
 		}
 		data = simpleScriptCompiler.compile(source, null);
 		final byte[] dataPacket = data;
@@ -141,5 +141,6 @@ public class Main {
 		for (String message : messages) {
 			System.err.println(message);
 		}
+		System.exit(0);
 	}
 }

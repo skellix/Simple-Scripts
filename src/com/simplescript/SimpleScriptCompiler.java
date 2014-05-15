@@ -10,6 +10,7 @@ import java.awt.*;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.lang.ref.Reference;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -26,6 +27,9 @@ public class SimpleScriptCompiler implements Opcodes {
 
 	private int tabSize = 0;
 	private SimpleScript caller = null;
+	private ClassWriter classWriter;
+	private String className;
+	private LinkedHashMap<String, String> imports;
 
 	/**
 	 * Used for creating the main class.
@@ -61,25 +65,26 @@ public class SimpleScriptCompiler implements Opcodes {
 			for (; ! (""+source.charAt(index.get())).matches("\\{") ; index.getAndIncrement());
 			index.getAndIncrement();
 		}
-		ClassWriter classWriter = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
+		classWriter = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
 		classWriter.visit(V1_7, ACC_PUBLIC, name, null, "java/lang/Object", null);
 		MethodVisitor methodVisitor = classWriter.visitMethod(ACC_PUBLIC, "<init>", "("+args+")V", null, null);
 		methodVisitor.visitCode();
 		methodVisitor.visitVarInsn(ALOAD, 0);
 		methodVisitor.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V");
-		LinkedHashMap<String, String> imports = new DefaultFrostyImports().getImports();
+		imports = new DefaultFrostyImports().getImports();
 		LinkedHashMap<String, Integer> variables = new LinkedHashMap<String, Integer>();
 		LinkedHashMap<String, String> types = new LinkedHashMap<String, String>();
 		Stack<String> stack = new Stack<String>();
 		LinkedHashMap<String, Label> labels = new LinkedHashMap<String, Label>();
-		Stack<Label> blocks = new Stack<Label>();
+		Stack<Block> blocks = new Stack<Block>();
 		if (Main.debug) {
 			System.out.println(
 					"class "+name+" {"
 			);
 			tabSize ++;
 		}
-		getbody(classWriter, methodVisitor, name, imports, variables, types, stack, labels, blocks, index, source);
+		className = name;
+		getbody(methodVisitor, variables, types, stack, labels, blocks, index, source);
 		if (Main.debug) {
 			System.out.println(
 					"}"
@@ -95,118 +100,539 @@ public class SimpleScriptCompiler implements Opcodes {
 
 	/**
 	 * Compiles the source code body of a function or class.
-	 * @param classWriter
 	 * @param methodVisitor
-	 * @param className name of the class
 	 * @param variables current variables in the scope
 	 * @param types current variable types in the scope
 	 * @param index current source code index
 	 * @param source the source code
 	 */
-	private void getbody(ClassWriter classWriter, MethodVisitor methodVisitor, String className, LinkedHashMap<String, String> imports, LinkedHashMap<String, Integer> variables, LinkedHashMap<String, String> types, Stack<String> stack, LinkedHashMap<String, Label> labels, Stack<Label> blocks, AtomicInteger index, String source) {
+	private void getbody(MethodVisitor methodVisitor, LinkedHashMap<String, Integer> variables, LinkedHashMap<String, String> types, Stack<String> stack, LinkedHashMap<String, Label> labels, Stack<Block> blocks, AtomicInteger index, String source) {
 		while (index.get() < source.length()) {
-			String line = getUntil("\n|\\}", source, index);
+			String[] args = getArgs(source, index);
 			index.getAndIncrement();
-			if (! preArgsCheck(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, line, index, source)) {
-				if (index.get() < source.length() && source.charAt(index.get()) == '}') {
+			if (true) {
+				/*if (index.get() < source.length() && source.charAt(index.get()) == '}') {
 					line = "} " + line;
 					index.getAndIncrement();
-				}
-				String[] args = argsCheck(classWriter, methodVisitor, className, variables, types, stack, labels, blocks, line, index, source);
-				if (Main.debug && args.length > 0 && Main.debugLevel > 0) {
-					String list = Arrays.asList(args).toString();
-					System.out.println(times(".   ", tabSize)+"-----Line:<"+list.substring(1, list.length()-1)+">");
-				}
-				for (int i = args.length-1 ; i >= 0 ; i --) {
-					String arg = args[i];
-					if (Main.debug && ! arg.equals("")) {
-						if (! arg.equals("}")) {
-							System.out.print(times(".   ", tabSize)+arg+" = ");
+				}//*/
+				if (args.length > 1 && args[0].equals("import")) {// check import
+					String name = args[1];
+					try {
+						Class c = Class.forName(name, true, Thread.currentThread().getContextClassLoader());
+					} catch (ClassNotFoundException e) {
+						File frostyFile = new File(name+".frosty");
+						if (frostyFile.exists()) {
+							new SimpleScript(
+									name + "() {\n" +
+											new SimpleScriptUtils().read(
+													frostyFile.getName()
+											) + "\n}"
+							);
+						} else {
+							try {
+								Class c = Class.forName(name.replace('/', '.'), true, Thread.currentThread().getContextClassLoader());
+							} catch (ClassNotFoundException e1) {
+								Main.error("Import file '" + frostyFile.getAbsolutePath() + "' could not be found!");
+							}
 						}
 					}
+					String shortName;
 					try {
-						if (arg.equals("")) {
-							//
-						} else if (arg.equals("{")) {
-							blocks.push(new Label());
-						} else if (arg.equals("}")) {
-							return;
-						} else if (arg.startsWith("(") && arg.endsWith(")")) {
-							String newSrc = arg.substring(1, arg.length()-1);
-							tabSize ++;
-							if (Main.debug && ! arg.equals("")) {
-								System.out.println("{");
+						shortName = name.substring(name.lastIndexOf('/')+1);
+					} catch (Exception e) {
+						shortName = name;
+					}
+					imports.put(shortName, name);
+				} else if (args.length > 1 && args[0].equals("func")) {
+					/*matcher = Pattern.compile(
+							"^\\s*func\\s+(public|private|protected|)\\s*(static|)\\s*(|[^\\s]+)\\s*([^\\s\\(]+)\\s*(\\([^\\)]*\\))\\s*\\{"
+					).matcher(line);//*/
+					int argIndex = 1;
+					String permission =
+							args[argIndex].equals("public") ||
+							args[argIndex].equals("private") ||
+							args[argIndex].equals("protected") ? args[argIndex ++] : "";
+					String visibility =
+							args[argIndex].equals("static") ? args[argIndex ++] : "public";
+					String returnType = doTypeCheck(
+							args[argIndex].contains("(") ? "void" : args[argIndex ++]
+					);
+					String name =
+							args[argIndex].substring(0, args[argIndex].indexOf('('));
+					String params = doParamTypeCheck(
+							args[argIndex].substring(args[argIndex].indexOf('('), args[argIndex].lastIndexOf(')')+1)
+					);
+					index.set(index.get()-args[argIndex + 1].length());
+					makeFunc(permission, visibility, returnType, name, params, variables, index, source);
+				} else {
+					args = argsCheck(methodVisitor, variables, types, stack, labels, blocks, args, index, source);
+					if (Main.debug && args.length > 0 && Main.debugLevel > 0) {
+						String list = Arrays.asList(args).toString();
+						System.out.println(times(".   ", tabSize)+"-----Line:<"+list.substring(1, list.length()-1)+">");
+					}
+					for (int i = args.length-1 ; i >= 0 ; i --) {
+						String arg = args[i];
+						if (Main.debug && ! arg.equals("")) {
+							if (! arg.equals("}")) {
+								System.out.print(times(".   ", tabSize)+arg+" = ");
 							}
-							getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), newSrc);
-							System.out.print(times(".   ", tabSize - 1) + "} = ");
-							tabSize --;
-						} else if (arg.equals("endl")) {
-							methodVisitor.visitLdcInsn("\n");
-							stack.push("Ljava/lang/String;");
-						} else if (arg.equals("true")) {
-							methodVisitor.visitLdcInsn(true);
-							stack.push("Z");
-						} else if (arg.equals("false")) {
-							methodVisitor.visitLdcInsn(false);
-							stack.push("Z");
-						} else if (arg.charAt(0) == '\"' && arg.charAt(arg.length()-1) == '\"') {
-							final String var = arg.substring(1, arg.length() - 1);
-							methodVisitor.visitLdcInsn(var);
-							stack.push("Ljava/lang/String;");
-						} else if (arg.charAt(0) == '\'' && arg.charAt(arg.length()-1) == '\'') { // system process
-							final String cmdArgs = arg.substring(1, arg.length() - 1);
-							methodVisitor.visitLdcInsn(cmdArgs);
-							methodVisitor.visitMethodInsn(INVOKESTATIC, "Frosty", "buildProcess", "(Ljava/lang/String;)Ljava/lang/String;");
-							stack.push("Ljava/lang/String;");
-						} else if (arg.matches("^\\d+$")) {
-							methodVisitor.visitLdcInsn(Integer.parseInt(arg));
-							stack.push("I");
-						} else if (arg.matches("^\\d+\\.\\d+$")) {
-							methodVisitor.visitLdcInsn(Double.parseDouble(arg));
-							stack.push("D");
-						} else if (arg.contains("//")) {
-							break;
-						} else if (arg.startsWith("this")) {
-							String[] reflectArgs = arg.split("\\.");
-						} else if (arg.startsWith("$")) {
-							String varName = arg.split("\\.")[0];
-							int var = getVar(varName, variables, types, "", source, index);
-							methodVisitor.visitVarInsn(
-									getLoad(varName, variables, types, index),
-									var
-							);
-							if (arg.contains(".")) {
-								String varArgs = arg.substring(varName.length()+1);
-								arg = getType(varName, variables, types);
-								if (arg.length() > 1) {
-									arg = arg.substring(1, arg.length()-1);
-								}
-								if (Main.debug) {
+						}
+						try {
+							if (arg.equals("")) {
+								//
+							} else if (arg.startsWith("{")) {
+								blocks.push(new Block(new Label(), i));
+							} else if (arg.equals("}")) {
+								return;
+							} else if (arg.startsWith("(") && arg.endsWith(")")) {
+								String newSrc = arg.substring(1, arg.length()-1);
+								tabSize ++;
+								if (Main.debug && ! arg.equals("")) {
 									System.out.println("{");
+								}
+								getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0), newSrc);
+								System.out.print(times(".   ", tabSize - 1) + "} = ");
+								tabSize --;
+							} else if (arg.equals("endl")) {
+								methodVisitor.visitLdcInsn("\n");
+								stack.push("Ljava/lang/String;");
+							} else if (arg.equals("true")) {
+								methodVisitor.visitLdcInsn(true);
+								stack.push("Z");
+							} else if (arg.equals("false")) {
+								methodVisitor.visitLdcInsn(false);
+								stack.push("Z");
+							} else if (arg.charAt(0) == '\"' && arg.charAt(arg.length()-1) == '\"') {
+								final String var = arg.substring(1, arg.length() - 1);
+								methodVisitor.visitLdcInsn(var);
+								stack.push("Ljava/lang/String;");
+							} else if (arg.charAt(0) == '\'' && arg.charAt(arg.length()-1) == '\'') { // system process
+								final String cmdArgs = arg.substring(1, arg.length() - 1);
+								methodVisitor.visitLdcInsn(cmdArgs);
+								methodVisitor.visitMethodInsn(INVOKESTATIC, "Frosty", "buildProcess", "(Ljava/lang/String;)Ljava/lang/String;");
+								stack.push("Ljava/lang/String;");
+							} else if (arg.matches("^\\d+$")) {
+								methodVisitor.visitLdcInsn(Integer.parseInt(arg));
+								stack.push("I");
+							} else if (arg.matches("^\\d+\\.\\d+$")) {
+								methodVisitor.visitLdcInsn(Double.parseDouble(arg));
+								stack.push("D");
+							} else if (arg.contains("//")) {
+								break;
+							} else if (arg.startsWith("this")) {
+								String[] reflectArgs = arg.split("\\.");
+							} else if (arg.startsWith("$")) {
+								String varName = arg.split("\\.")[0];
+								int var = getVar(varName, variables, types, "", source, index);
+								methodVisitor.visitVarInsn(
+										getLoad(varName, variables, types, index),
+										var
+								);
+								if (arg.contains(".")) {
+									String varArgs = arg.substring(varName.length()+1);
+									arg = getType(varName, variables, types);
+									if (arg.length() > 1) {
+										arg = arg.substring(1, arg.length()-1);
+									}
+									if (Main.debug) {
+										System.out.println("{");
+										tabSize ++;
+									}
+									if (varArgs.contains("(") && varArgs.contains(")")) {
+										getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0), varName);
+										String[] varTypes = varArgs.substring(varArgs.indexOf('(')+1, varArgs.lastIndexOf(')')).split("\\,\\s*");
+										ArrayList<String> argTypes = new ArrayList<String>();
+										for (int j = varTypes.length-1 ; j >= 0 ; j --) {
+											if (! varTypes[j].equals("")) {
+												getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0), varTypes[j]);
+												argTypes.add(stack.peek());
+											}
+										}
+										String methodName = varArgs.substring(0, varArgs.indexOf('('));
+										try {
+											Class c = Class.forName(arg.replace('/', '.'));
+											String argsString = "";
+											String returnType = "";
+											String invokeType = "invokeVirtual";
+											int numberOfParams = -1;
+											if (varArgs.startsWith("<init>")) {
+												returnType = "V";
+												invokeType = "invokeSpecial";
+												for (Constructor constructor : c.getConstructors()) {
+													if (constructor.getParameterTypes().length == argTypes.size()) {
+														String thisArgsString = "";
+														int thisNumberOfParams = 0;
+														if (argTypes.size() == 0) {
+															//
+														} else {
+															Class<?>[] parameterTypes = constructor.getParameterTypes();
+															for (int j = 0 ; j < parameterTypes.length && j < argTypes.size() ; j ++) {
+																Class c1 = null;
+																String argTypeName = argTypes.get(j);
+																//doTypeCheck(argTypeName, c1);
+																c1 = getClassForType(argTypeName);
+																Class c2 = null;
+																String typeCanonicalName = parameterTypes[j].getCanonicalName();
+																typeCanonicalName = doTypeCheck(typeCanonicalName);
+																c2 = getClassForType(typeCanonicalName);
+																if (c2.isAssignableFrom(c1)) {
+																	thisArgsString += typeCanonicalName;
+																	thisNumberOfParams ++;
+																}
+															}
+														}
+														if (thisNumberOfParams > numberOfParams) {
+															numberOfParams = thisNumberOfParams;
+															argsString = thisArgsString;
+														}
+													}
+												}
+											} else {
+												Method[] methods = c.getMethods();
+												ArrayList<Method> matches = new ArrayList<Method>();
+												for (Method method : methods) {
+													if (method.getName().equals(methodName)) {
+														matches.add(method);
+													}
+												}
+												System.out.print("");
+												for (Method method : methods) {
+													if (method.getName().equals(methodName)) {
+														if (method.getParameterTypes().length == argTypes.size()) {
+															String thisArgsString = "";
+															int thisNumberOfParams = 0;
+															if (argTypes.size() == 0) {
+																returnType = method.getReturnType().getCanonicalName().replace('.','/');
+																if (returnType.equals("void")) {
+																	returnType = "V";
+																} else {
+																	returnType = 'L'+returnType+';';
+																}
+															} else {
+																Class<?>[] parameterTypes = method.getParameterTypes();
+																for (int j = 0 ; j < parameterTypes.length && j < argTypes.size() ; j ++) {
+																	Class c1 = null;
+																	String argTypeName = argTypes.get(j);
+														/*if (argTypeName.startsWith("L")) {
+															argTypeName = argTypeName.substring(1, argTypeName.length()-1);
+															argTypeName = argTypeName.replace('/', '.');
+														}//*/
+																	//doTypeCheck(argTypeName, c1);
+																	c1 = getClassForType(argTypeName);
+																	Class c2 = null;
+																	String typeCanonicalName = parameterTypes[j].getCanonicalName();
+																	typeCanonicalName = doTypeCheck(typeCanonicalName);
+																	c2 = getClassForType(typeCanonicalName);
+																	if (c2.isAssignableFrom(c1)) {
+																		thisArgsString += typeCanonicalName;
+																		thisNumberOfParams ++;
+																		returnType = method.getReturnType().getCanonicalName();//.replace('.','/');
+																	/*if (returnType.equals("void")) {
+																		returnType = "V";
+																	} else {
+																		returnType = 'L'+returnType+';';
+																	}*/
+																		returnType = doTypeCheck(returnType);
+																	}
+																}
+															}
+															if (thisNumberOfParams > numberOfParams) {
+																numberOfParams = thisNumberOfParams;
+																argsString = thisArgsString;
+															}
+														}
+													}
+												}
+											}
+											if (numberOfParams != -1) {
+												getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0),
+														invokeType+':'+arg+'.'+methodName+'('+argsString+')'+returnType
+												);
+											} else {
+												Main.error("Class '"+arg+"' does not contain a method named '"+methodName+"'");
+											}
+										} catch (ClassNotFoundException e) {
+											e.printStackTrace();
+										}
+									} else {
+										getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0),
+												arg + '.' + varArgs
+										);
+									}
+									if (Main.debug) {
+										tabSize --;
+										System.out.print(times(".   ", tabSize)+"} = ");
+									}
+								} else {
+									stack.push(getType(varName, variables, types));
+								}
+							} else if (arg.endsWith("$")) {
+								String type = tryPop(stack, index);
+								methodVisitor.visitVarInsn(
+										getInst(type, "STORE", variables, types, index),
+										getVar(arg, variables, types, type, source, index)
+								);
+							} else if (arg.endsWith(":")) {
+								Label label = new Label();
+								labels.put(arg.substring(0, arg.length() - 1), label);
+								methodVisitor.visitLabel(label);
+							} else if (arg.startsWith(":") && ! arg.startsWith("::")) {
+								methodVisitor.visitJumpInsn(
+										GOTO,
+										labels.get(arg.substring(1))
+								);
+							} else if (arg.equals("new")) {
+								methodVisitor.visitTypeInsn(NEW, args[i+1]);
+								methodVisitor.visitInsn(DUP);
+								methodVisitor.visitMethodInsn(INVOKESPECIAL, args[i + 1], "<init>", "()V");
+								stack.push(args[i+1]);
+							} else if (arg.equals("+")) {
+								String type = tryPop(stack, index);
+								stack.pop();
+								methodVisitor.visitInsn(getInst(type, "ADD", variables, types, index));
+								stack.push(type);
+							} else if (arg.equals("-")) {
+								String type = tryPop(stack, index);
+								stack.pop();
+								methodVisitor.visitInsn(getInst(type, "SUB", variables, types, index));
+								stack.push(type);
+							} else if (arg.equals("/")) {
+								String type = tryPop(stack, index);
+								stack.pop();
+								methodVisitor.visitInsn(getInst(type, "DIV", variables, types, index));
+								stack.push(type);
+							} else if (arg.equals("*")) {
+								String type = tryPop(stack, index);
+								stack.pop();
+								methodVisitor.visitInsn(getInst(type, "MUL", variables, types, index));
+								stack.push(type);
+							} else if (arg.equals("%")) {
+								String type = tryPop(stack, index);
+								stack.pop();
+								methodVisitor.visitInsn(getInst(type, "REM", variables, types, index));
+								stack.push(type);
+							} else if (arg.equals("==")) {
+								String type = tryPop(stack, index);
+								stack.pop();
+								methodVisitor.visitJumpInsn(IF_ICMPNE, blocks.peek().label);
+							} else if (arg.equals("!=")) {
+								String type = tryPop(stack, index);
+								stack.pop();
+								methodVisitor.visitJumpInsn(IF_ICMPEQ, blocks.peek().label);
+							} else if (arg.equals("<")) {
+								String type = tryPop(stack, index);
+								stack.pop();
+								methodVisitor.visitJumpInsn(IF_ICMPGE, blocks.peek().label);
+							} else if (arg.equals("<=")) {
+								String type = tryPop(stack, index);
+								stack.pop();
+								methodVisitor.visitJumpInsn(IF_ICMPGT, blocks.peek().label);
+							} else if (arg.equals(">")) {
+								String type = tryPop(stack, index);
+								stack.pop();
+								methodVisitor.visitJumpInsn(IF_ICMPLE, blocks.peek().label);
+							} else if (arg.equals(">=")) {
+								String type = tryPop(stack, index);
+								stack.pop();
+								methodVisitor.visitJumpInsn(IF_ICMPLT, blocks.peek().label);
+							} else if (arg.equals("if")) {
+								if (Main.debug) {
+									System.out.println("\n"+Arrays.asList(args));
 									tabSize ++;
 								}
-								if (varArgs.contains("(") && varArgs.contains(")")) {
-									getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), varName);
-									String[] varTypes = varArgs.substring(varArgs.indexOf('(')+1, varArgs.lastIndexOf(')')).split("\\,\\s*");
-									ArrayList<String> argTypes = new ArrayList<String>();
-									for (int j = varTypes.length-1 ; j >= 0 ; j --) {
-										if (! varTypes[j].equals("")) {
-											getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), varTypes[j]);
-											argTypes.add(stack.peek());
-										}
+								//index.getAndIncrement();
+								Block block = blocks.pop();// TODO fix this part (visit body of block)
+								getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0)
+										, args[block.index].substring(1, args[block.index].length()-1)
+								);
+								methodVisitor.visitLabel(block.label);
+								break;
+							} else if (arg.equals("get")) {
+								String listType = stack.pop();
+								stack.pop();
+								if (listType.startsWith("[")) {
+									methodVisitor.visitInsn(SWAP);
+									methodVisitor.visitInsn(AALOAD);
+									stack.push(listType.substring(1));
+								} else {
+									Main.error("Command get requires a list as input at line: "+getLineIndex(source, index));
+								}
+							} else if (arg.equals("#StringBuilderStart#")) {
+								methodVisitor.visitTypeInsn(NEW, "java/lang/StringBuilder");
+								methodVisitor.visitInsn(DUP);
+								methodVisitor.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V");
+								stack.push("Ljava/lang/StringBuilder;");
+							} else if (arg.equals("<<")) {
+								String type = tryPop(stack, index);
+								testPop(stack, "Ljava/lang/StringBuilder;", index);
+								methodVisitor.visitMethodInsn(
+										INVOKEVIRTUAL,
+										"java/lang/StringBuilder",
+										"append",
+										"(" + type + ")Ljava/lang/StringBuilder;"
+								);
+								stack.push("Ljava/lang/StringBuilder;");
+							} else if (arg.equals("#StringBuilderEnd#")) {
+								String type = stack.pop();
+								methodVisitor.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;");
+								stack.push("Ljava/lang/String;");
+							} else if (arg.equals("join")) {
+								stack.pop();
+								stack.pop();
+								methodVisitor.visitMethodInsn(INVOKESTATIC, "Frosty", "join", "([Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+								stack.push("Ljava/lang/String;");
+							} else if (arg.equals("toString")) {
+								stack.pop();
+								methodVisitor.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "toString", "()Ljava/lang/String;");
+								stack.push("Ljava/lang/String;");
+							} else if (arg.equals("print")) {
+								methodVisitor.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
+								methodVisitor.visitInsn(SWAP);
+								methodVisitor.visitMethodInsn(
+										INVOKEVIRTUAL,
+										"java/io/PrintStream", "print", "(" +
+										tryPop(stack, index) +
+										")V"
+								);
+							} else if (arg.equals("read")) {
+								methodVisitor.visitFieldInsn(GETSTATIC, "java/lang/System", "in", "Ljava/lang/InputStream;");
+								methodVisitor.visitMethodInsn(
+										INVOKEVIRTUAL,
+										"java/lang/InputStream", "read", "()I"
+								);
+								stack.push("I");
+							} else if (arg.equals("SWAP")) {
+								String temp1 = stack.pop();
+								String temp2 = stack.pop();
+								methodVisitor.visitInsn(SWAP);
+								stack.push(temp1);
+								stack.push(temp2);
+							} else if (arg.equals("DUP")) {
+								String temp1 = stack.pop();
+								methodVisitor.visitInsn(DUP);
+								stack.push(temp1);
+								stack.push(temp1);
+							} else if (arg.startsWith("new:")) {
+								String type = arg.split("\\:")[1];
+								methodVisitor.visitTypeInsn(NEW, type);
+								stack.push('L'+type+';');
+							} else if (arg.startsWith("::")) {
+								String type = arg.substring(2);
+								if (type.contains(".")) {
+									String method = type.substring(type.indexOf('.')+1);
+									type = type.substring(0,type.indexOf('.'));
+									if (imports.containsKey(type)) {
+										type = imports.get(type);
 									}
-									String methodName = varArgs.substring(0, varArgs.indexOf('('));
+									String dup = "";
+									if (method.startsWith("<init>")) {
+										dup = "DUP";
+									}
+									if (Main.debug) {
+										System.out.println("{");
+										tabSize ++;
+									}
+									String data = type+'.'+method+' '+dup+" ::"+type;
+									getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0),
+											type + '.' + method + ' ' + dup + " ::" + type
+									);
+									if (Main.debug) {
+										tabSize --;
+										System.out.print(times(".   ", tabSize)+"} = ");
+									}
+								} else {
 									try {
-										Class c = Class.forName(arg.replace('/', '.'));
-										String argsString = "";
-										String returnType = "";
-										String invokeType = "invokeVirtual";
-										int numberOfParams = -1;
-										if (varArgs.startsWith("<init>")) {
-											returnType = "V";
-											invokeType = "invokeSpecial";
-											for (Constructor constructor : c.getConstructors()) {
-												if (constructor.getParameterTypes().length == argTypes.size()) {
+										if (type.equals("Z")) {
+											methodVisitor.visitLdcInsn(boolean.class.newInstance());
+											stack.push(type);
+										} else if (type.equals("C")) {
+											methodVisitor.visitLdcInsn(char.class.newInstance());
+											stack.push(type);
+										} else if (type.equals("B")) {
+											methodVisitor.visitLdcInsn(byte.class.newInstance());
+											stack.push(type);
+										} else if (type.equals("S")) {
+											methodVisitor.visitLdcInsn(short.class.newInstance());
+											stack.push(type);
+										} else if (type.equals("I")) {
+											methodVisitor.visitLdcInsn(int.class.newInstance());
+											stack.push(type);
+										} else if (type.equals("F")) {
+											methodVisitor.visitLdcInsn(float.class.newInstance());
+											stack.push(type);
+										} else if (type.equals("J")) {
+											methodVisitor.visitLdcInsn(long.class.newInstance());
+											stack.push(type);
+										} else if (type.equals("D")) {
+											methodVisitor.visitLdcInsn(double.class.newInstance());
+											stack.push(type);
+										} else if (type.startsWith("[")) {
+											methodVisitor.visitInsn(ACONST_NULL);
+											stack.push(type);
+										} else {
+											methodVisitor.visitTypeInsn(NEW, type);
+											stack.push('L'+type+';');
+										}
+									} catch (IllegalAccessException e) {
+										e.printStackTrace();
+									} catch (InstantiationException e) {
+										e.printStackTrace();
+									}
+								}
+							} else if (arg.startsWith("invoke")) {
+								Matcher matcher = Pattern.compile("(invokeSpecial|invokeStatic|invokeVirtual)\\:([^\\.]+)\\.([^\\(]+)(.*)").matcher(arg);
+								if (matcher.find()) {
+									if (! matcher.group(1).equals("invokeStatic")) {
+										stack.pop();
+									}
+									methodVisitor.visitMethodInsn(
+											matcher.group(1).equals("invokeSpecial")? INVOKESPECIAL:
+													matcher.group(1).equals("invokeStatic")? INVOKESTATIC:
+															INVOKEVIRTUAL,
+											matcher.group(2),
+											matcher.group(3),
+											matcher.group(4)
+									);
+									String returnVal = matcher.group(4).split("\\)")[1];
+									String param = matcher.group(4).substring(0, matcher.group(4).length()-returnVal.length());
+									LinkedHashMap<String, Integer> paramArgs = new LinkedHashMap<String, Integer>();
+									addParamsAsVariables(param, paramArgs, new LinkedHashMap<String, String>(), source, index);
+									for (String key : paramArgs.keySet().toArray(new String[0])) {
+										stack.pop();
+									}
+									stack.push(returnVal);
+								} else {
+									Main.error("invlid invoke at line: " + getLineIndex(source, index));
+								}
+							} else if (arg.contains("(") && arg.contains(")")) {
+								String varName = arg.split("\\.")[0];
+								if (arg.contains(".")) {
+									String varArgs = arg.substring(varName.length()+1);
+									arg = varName;
+									if (Main.debug) {
+										System.out.println("{");
+										tabSize ++;
+									}
+									if (varArgs.contains("(") && varArgs.contains(")")) {
+										String[] varTypes = varArgs.substring(varArgs.indexOf('(')+1, varArgs.lastIndexOf(')')).split("\\,\\s*");
+										ArrayList<String> argTypes = new ArrayList<String>();
+										for (int j = varTypes.length-1 ; j >= 0 ; j --) {
+											if (! varTypes[j].equals("")) {
+												getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0), varTypes[j]);
+												argTypes.add(stack.peek());
+											}
+										}
+										String methodName = varArgs.substring(0, varArgs.indexOf('('));
+										try {
+											Class c = Class.forName(arg.replace('/', '.'));
+											String argsString = "";
+											String returnType = "V";
+											String invokeType = "invokeVirtual";
+											int numberOfParams = -1;
+											if (varArgs.startsWith("<init>")) {
+												invokeType = "invokeSpecial";
+												returnType = "V";
+												for (Constructor constructor : c.getConstructors()) {
 													String thisArgsString = "";
 													int thisNumberOfParams = 0;
 													if (argTypes.size() == 0) {
@@ -214,16 +640,50 @@ public class SimpleScriptCompiler implements Opcodes {
 													} else {
 														Class<?>[] parameterTypes = constructor.getParameterTypes();
 														for (int j = 0 ; j < parameterTypes.length && j < argTypes.size() ; j ++) {
-															Class c1 = null;
 															String argTypeName = argTypes.get(j);
-															//doTypeCheck(argTypeName, c1);
-															c1 = getClassForType(argTypeName);
+															if (argTypeName.startsWith("L")) {
+																argTypeName = argTypeName.substring(1, argTypeName.length()-1);
+																argTypeName = argTypeName.replace('/', '.');
+															} else if (argTypeName.equals("I")) {
+																argTypeName = "Integer";
+															}
+															Class c1 = Class.forName(argTypeName);
 															Class c2 = null;
 															String typeCanonicalName = parameterTypes[j].getCanonicalName();
-															typeCanonicalName = doTypeCheck(typeCanonicalName, imports);
-															c2 = getClassForType(typeCanonicalName);
+															if (typeCanonicalName.equals("boolean")) {
+																c2 = boolean.class;
+																typeCanonicalName = "Z";
+															} else if (typeCanonicalName.equals("char")) {
+																c2 = char.class;
+																typeCanonicalName = "C";
+															} else if (typeCanonicalName.equals("byte")) {
+																c2 = byte.class;
+																typeCanonicalName = "B";
+															} else if (typeCanonicalName.equals("short")) {
+																c2 = short.class;
+																typeCanonicalName = "S";
+															} else if (typeCanonicalName.equals("int")) {
+																c2 = int.class;
+																typeCanonicalName = "I";
+															} else if (typeCanonicalName.equals("float")) {
+																c2 = float.class;
+																typeCanonicalName = "F";
+															} else if (typeCanonicalName.equals("long")) {
+																c2 = long.class;
+																typeCanonicalName = "J";
+															} else if (typeCanonicalName.equals("double")) {
+																c2 = double.class;
+																typeCanonicalName = "D";
+															} else {
+																c2 = Class.forName(typeCanonicalName);
+																typeCanonicalName = 'L'+typeCanonicalName+';';
+															}
+															//doTypeCheck(argTypeName, c1);
+															//c1 = getClassForType(argTypeName);
+															//typeCanonicalName = doTypeCheck(typeCanonicalName);
+															//c2 = getClassForType(typeCanonicalName);
 															if (c2.isAssignableFrom(c1)) {
-																thisArgsString += typeCanonicalName;
+																thisArgsString += typeCanonicalName.replace('.', '/');
 																thisNumberOfParams ++;
 															}
 														}
@@ -233,53 +693,76 @@ public class SimpleScriptCompiler implements Opcodes {
 														argsString = thisArgsString;
 													}
 												}
-											}
-										} else {
-											Method[] methods = c.getMethods();
-											ArrayList<Method> matches = new ArrayList<Method>();
-											for (Method method : methods) {
-												if (method.getName().equals(methodName)) {
-													matches.add(method);
-												}
-											}
-											System.out.print("");
-											for (Method method : methods) {
-												if (method.getName().equals(methodName)) {
-													if (method.getParameterTypes().length == argTypes.size()) {
+											} else {
+												for (Method method : c.getMethods()) {
+													if (method.getName().equals(methodName)) {
 														String thisArgsString = "";
 														int thisNumberOfParams = 0;
 														if (argTypes.size() == 0) {
-															returnType = method.getReturnType().getCanonicalName().replace('.','/');
+															returnType = method.getReturnType().getCanonicalName();
 															if (returnType.equals("void")) {
 																returnType = "V";
 															} else {
-																returnType = 'L'+returnType+';';
+																returnType = 'L'+returnType.replace('.', '/')+';';
 															}
 														} else {
 															Class<?>[] parameterTypes = method.getParameterTypes();
 															for (int j = 0 ; j < parameterTypes.length && j < argTypes.size() ; j ++) {
 																Class c1 = null;
 																String argTypeName = argTypes.get(j);
-														/*if (argTypeName.startsWith("L")) {
-															argTypeName = argTypeName.substring(1, argTypeName.length()-1);
-															argTypeName = argTypeName.replace('/', '.');
-														}//*/
-																//doTypeCheck(argTypeName, c1);
-																c1 = getClassForType(argTypeName);
+																if (argTypeName.startsWith("L")) {
+																	argTypeName = argTypeName.substring(1, argTypeName.length()-1);
+																	argTypeName = argTypeName.replace('/', '.');
+																	c1 = Class.forName(argTypeName);
+																} else if (argTypeName.equals("I")) {
+																	c1 = int.class;
+																} else if (argTypeName.equals("Z")) {
+																	c1 = boolean.class;
+																}
 																Class c2 = null;
 																String typeCanonicalName = parameterTypes[j].getCanonicalName();
-																typeCanonicalName = doTypeCheck(typeCanonicalName, imports);
-																c2 = getClassForType(typeCanonicalName);
+																if (typeCanonicalName.equals("boolean")) {
+																	c2 = boolean.class;
+																	typeCanonicalName = "Z";
+																} else if (typeCanonicalName.equals("char")) {
+																	c2 = char.class;
+																	typeCanonicalName = "C";
+																} else if (typeCanonicalName.equals("byte")) {
+																	c2 = byte.class;
+																	typeCanonicalName = "B";
+																} else if (typeCanonicalName.equals("short")) {
+																	c2 = short.class;
+																	typeCanonicalName = "S";
+																} else if (typeCanonicalName.equals("int")) {
+																	c2 = int.class;
+																	typeCanonicalName = "I";
+																} else if (typeCanonicalName.equals("float")) {
+																	c2 = float.class;
+																	typeCanonicalName = "F";
+																} else if (typeCanonicalName.equals("long")) {
+																	c2 = long.class;
+																	typeCanonicalName = "J";
+																} else if (typeCanonicalName.equals("double")) {
+																	c2 = double.class;
+																	typeCanonicalName = "D";
+																} else {
+																	c2 = Class.forName(typeCanonicalName);
+																	typeCanonicalName = 'L'+typeCanonicalName+';';
+																}
+																//doTypeCheck(argTypeName, c1);
+																//c1 = getClassForType(argTypeName);
+																//typeCanonicalName = doTypeCheck(typeCanonicalName);
+																//c2 = getClassForType(typeCanonicalName);
 																if (c2.isAssignableFrom(c1)) {
-																	thisArgsString += typeCanonicalName;
+																	thisArgsString += typeCanonicalName.replace('.', '/');
 																	thisNumberOfParams ++;
-																	returnType = method.getReturnType().getCanonicalName();//.replace('.','/');
-																	/*if (returnType.equals("void")) {
-																		returnType = "V";
-																	} else {
-																		returnType = 'L'+returnType+';';
-																	}*/
-																	returnType = doTypeCheck(returnType, imports);
+																	returnType = method.getReturnType().getCanonicalName();
+																/*if (returnType.equals("void")) {
+																	returnType = "V";
+																} else {
+																	returnType = 'L'+returnType.replace('.', '/')+';';
+																}*/
+																	returnType = doTypeCheck(returnType);
 																}
 															}
 														}
@@ -290,534 +773,120 @@ public class SimpleScriptCompiler implements Opcodes {
 													}
 												}
 											}
+											if (numberOfParams != -1) {
+												getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0),
+														invokeType+':'+arg+'.'+methodName+'('+argsString+')'+returnType
+												);
+											} else {
+												Main.error("Class '"+arg+"' does not contain a method named '"+methodName+"'");
+											}
+										} catch (ClassNotFoundException e) {
+											e.printStackTrace();
 										}
-										if (numberOfParams != -1) {
-											getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
-													invokeType+':'+arg+'.'+methodName+'('+argsString+')'+returnType
-											);
-										} else {
-											Main.error("Class '"+arg+"' does not contain a method named '"+methodName+"'");
-										}
-									} catch (ClassNotFoundException e) {
-										e.printStackTrace();
+									} else {
+										getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0),
+												arg + '.' + varArgs
+										);
+									}
+									if (Main.debug) {
+										tabSize --;
+										System.out.print(times(".   ", tabSize)+"} = ");
 									}
 								} else {
-									getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
-											arg + '.' + varArgs
+									getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0),
+											className + '.' + arg
 									);
 								}
-								if (Main.debug) {
-									tabSize --;
-									System.out.print(times(".   ", tabSize)+"} = ");
+							} else if (arg.startsWith("get")) {
+								Matcher matcher = Pattern.compile("(getStatic|getField)\\:([^\\.]+)\\.([^\\>]+)\\>(.*)").matcher(arg);
+								if (matcher.find()) {
+									if (matcher.group(1).equals("getField")) {
+										stack.pop();
+									}
+									methodVisitor.visitFieldInsn(
+											matcher.group(1).equals("getStatic")? GETSTATIC:
+													GETFIELD,
+											matcher.group(2),
+											matcher.group(3),
+											matcher.group(4)
+									);
+									stack.push(matcher.group(4));
+								} else {
+									Main.error("invlid get at line: "+getLineIndex(source, index));
 								}
-							} else {
-								stack.push(getType(varName, variables, types));
-							}
-						} else if (arg.endsWith("$")) {
-							String type = tryPop(stack, index);
-							methodVisitor.visitVarInsn(
-									getInst(type, "STORE", variables, types, index),
-									getVar(arg, variables, types, type, source, index)
-							);
-						} else if (arg.endsWith(":")) {
-							Label label = new Label();
-							labels.put(arg.substring(0, arg.length() - 1), label);
-							methodVisitor.visitLabel(label);
-						} else if (arg.startsWith(":") && ! arg.startsWith("::")) {
-							methodVisitor.visitJumpInsn(
-									GOTO,
-									labels.get(arg.substring(1))
-							);
-						} else if (arg.equals("new")) {
-							methodVisitor.visitTypeInsn(NEW, args[i+1]);
-							methodVisitor.visitInsn(DUP);
-							methodVisitor.visitMethodInsn(INVOKESPECIAL, args[i + 1], "<init>", "()V");
-							stack.push(args[i+1]);
-						} else if (arg.equals("+")) {
-							String type = tryPop(stack, index);
-							stack.pop();
-							methodVisitor.visitInsn(getInst(type, "ADD", variables, types, index));
-							stack.push(type);
-						} else if (arg.equals("-")) {
-							String type = tryPop(stack, index);
-							stack.pop();
-							methodVisitor.visitInsn(getInst(type, "SUB", variables, types, index));
-							stack.push(type);
-						} else if (arg.equals("/")) {
-							String type = tryPop(stack, index);
-							stack.pop();
-							methodVisitor.visitInsn(getInst(type, "DIV", variables, types, index));
-							stack.push(type);
-						} else if (arg.equals("*")) {
-							String type = tryPop(stack, index);
-							stack.pop();
-							methodVisitor.visitInsn(getInst(type, "MUL", variables, types, index));
-							stack.push(type);
-						} else if (arg.equals("%")) {
-							String type = tryPop(stack, index);
-							stack.pop();
-							methodVisitor.visitInsn(getInst(type, "REM", variables, types, index));
-							stack.push(type);
-						} else if (arg.equals("==")) {
-							String type = tryPop(stack, index);
-							stack.pop();
-							methodVisitor.visitJumpInsn(IF_ICMPNE, blocks.peek());
-						} else if (arg.equals("!=")) {
-							String type = tryPop(stack, index);
-							stack.pop();
-							methodVisitor.visitJumpInsn(IF_ICMPEQ, blocks.peek());
-						} else if (arg.equals("<")) {
-							String type = tryPop(stack, index);
-							stack.pop();
-							methodVisitor.visitJumpInsn(IF_ICMPGE, blocks.peek());
-						} else if (arg.equals("<=")) {
-							String type = tryPop(stack, index);
-							stack.pop();
-							methodVisitor.visitJumpInsn(IF_ICMPGT, blocks.peek());
-						} else if (arg.equals(">")) {
-							String type = tryPop(stack, index);
-							stack.pop();
-							methodVisitor.visitJumpInsn(IF_ICMPLE, blocks.peek());
-						} else if (arg.equals(">=")) {
-							String type = tryPop(stack, index);
-							stack.pop();
-							methodVisitor.visitJumpInsn(IF_ICMPLT, blocks.peek());
-						} else if (arg.equals("if")) {
-							if (Main.debug) {
-								System.out.println("\n"+line);
-								tabSize ++;
-							}
-							//index.getAndIncrement();
-							Label block = blocks.pop();
-							getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, index, source);
-							methodVisitor.visitLabel(block);
-							break;
-						} else if (arg.equals("get")) {
-							String listType = stack.pop();
-							stack.pop();
-							if (listType.startsWith("[")) {
-								methodVisitor.visitInsn(SWAP);
-								methodVisitor.visitInsn(AALOAD);
-								stack.push(listType.substring(1));
-							} else {
-								Main.error("Command get requires a list as input at line: "+getLineIndex(source, index));
-							}
-						} else if (arg.equals("#StringBuilderStart#")) {
-							methodVisitor.visitTypeInsn(NEW, "java/lang/StringBuilder");
-							methodVisitor.visitInsn(DUP);
-							methodVisitor.visitMethodInsn(INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "()V");
-							stack.push("Ljava/lang/StringBuilder;");
-						} else if (arg.equals("<<")) {
-							String type = tryPop(stack, index);
-							testPop(stack, "Ljava/lang/StringBuilder;", index);
-							methodVisitor.visitMethodInsn(
-									INVOKEVIRTUAL,
-									"java/lang/StringBuilder",
-									"append",
-									"(" + type + ")Ljava/lang/StringBuilder;"
-							);
-							stack.push("Ljava/lang/StringBuilder;");
-						} else if (arg.equals("#StringBuilderEnd#")) {
-							String type = stack.pop();
-							methodVisitor.visitMethodInsn(INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;");
-							stack.push("Ljava/lang/String;");
-						} else if (arg.equals("join")) {
-							stack.pop();
-							stack.pop();
-							methodVisitor.visitMethodInsn(INVOKESTATIC, "Frosty", "join", "([Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-							stack.push("Ljava/lang/String;");
-						} else if (arg.equals("toString")) {
-							stack.pop();
-							methodVisitor.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "toString", "()Ljava/lang/String;");
-							stack.push("Ljava/lang/String;");
-						} else if (arg.equals("print")) {
-							methodVisitor.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-							methodVisitor.visitInsn(SWAP);
-							methodVisitor.visitMethodInsn(
-									INVOKEVIRTUAL,
-									"java/io/PrintStream", "print", "(" +
-									tryPop(stack, index) +
-									")V"
-							);
-						} else if (arg.equals("read")) {
-							methodVisitor.visitFieldInsn(GETSTATIC, "java/lang/System", "in", "Ljava/lang/InputStream;");
-							methodVisitor.visitMethodInsn(
-									INVOKEVIRTUAL,
-									"java/lang/InputStream", "read", "()I"
-							);
-							stack.push("I");
-						} else if (arg.equals("SWAP")) {
-							String temp1 = stack.pop();
-							String temp2 = stack.pop();
-							methodVisitor.visitInsn(SWAP);
-							stack.push(temp1);
-							stack.push(temp2);
-						}  else if (arg.equals("DUP")) {
-							String temp1 = stack.pop();
-							methodVisitor.visitInsn(DUP);
-							stack.push(temp1);
-							stack.push(temp1);
-						} else if (arg.startsWith("new:")) {
-							String type = arg.split("\\:")[1];
-							methodVisitor.visitTypeInsn(NEW, type);
-							stack.push('L'+type+';');
-						} else if (arg.startsWith("::")) {
-							String type = arg.substring(2);
-							if (type.contains(".")) {
-								String method = type.substring(type.indexOf('.')+1);
-								type = type.substring(0,type.indexOf('.'));
+							} else if (arg.contains(".")) {
+								String name = arg.substring(arg.indexOf('.')+1);
+								String type = arg.substring(0, arg.indexOf('.'));
 								if (imports.containsKey(type)) {
 									type = imports.get(type);
 								}
-								String dup = "";
-								if (method.startsWith("<init>")) {
-									dup = "DUP";
-								}
-								if (Main.debug) {
-									System.out.println("{");
-									tabSize ++;
-								}
-								String data = type+'.'+method+' '+dup+" ::"+type;
-								getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
-										type+'.'+method+' '+dup+" ::"+type
-								);
-								if (Main.debug) {
-									tabSize --;
-									System.out.print(times(".   ", tabSize)+"} = ");
-								}
-							} else {
 								try {
-									if (type.equals("Z")) {
-										methodVisitor.visitLdcInsn(boolean.class.newInstance());
-										stack.push(type);
-									} else if (type.equals("C")) {
-										methodVisitor.visitLdcInsn(char.class.newInstance());
-										stack.push(type);
-									} else if (type.equals("B")) {
-										methodVisitor.visitLdcInsn(byte.class.newInstance());
-										stack.push(type);
-									} else if (type.equals("S")) {
-										methodVisitor.visitLdcInsn(short.class.newInstance());
-										stack.push(type);
-									} else if (type.equals("I")) {
-										methodVisitor.visitLdcInsn(int.class.newInstance());
-										stack.push(type);
-									} else if (type.equals("F")) {
-										methodVisitor.visitLdcInsn(float.class.newInstance());
-										stack.push(type);
-									} else if (type.equals("J")) {
-										methodVisitor.visitLdcInsn(long.class.newInstance());
-										stack.push(type);
-									} else if (type.equals("D")) {
-										methodVisitor.visitLdcInsn(double.class.newInstance());
-										stack.push(type);
-									} else if (type.startsWith("[")) {
-										methodVisitor.visitInsn(ACONST_NULL);
-										stack.push(type);
-									} else {
-										methodVisitor.visitTypeInsn(NEW, type);
-										stack.push('L'+type+';');
+									Class c = Class.forName(type.replace('/', '.'));
+									Field field = c.getField(name);
+									String returnType = field.getType().getCanonicalName().replace('.', '/');
+									if (returnType.equals("int")) {
+										returnType = "I";
+									} else if (returnType.equals("float")) {
+										returnType = "F";
+									} else if (returnType.equals("boolean")) {
+										returnType = "Z";
+									} else if (returnType.equals("double")) {
+										returnType = "D";
 									}
-								} catch (IllegalAccessException e) {
-									e.printStackTrace();
-								} catch (InstantiationException e) {
+									if (returnType.length() > 1) {
+										returnType = 'L' + returnType + ';';
+									}//*/
+									//String returnType = field.getType().getCanonicalName();
+									//returnType = doTypeCheck(returnType);
+									methodVisitor.visitFieldInsn(
+											Modifier.isStatic(field.getModifiers())? GETSTATIC:
+													GETFIELD,
+											type,
+											name,
+											returnType
+									);
+									if (! Modifier.isStatic(field.getModifiers())) {
+										stack.pop();
+									}
+									stack.push(returnType);
+								} catch (ClassNotFoundException e) {
 									e.printStackTrace();
 								}
-							}
-						} else if (arg.startsWith("invoke")) {
-							Matcher matcher = Pattern.compile("(invokeSpecial|invokeStatic|invokeVirtual)\\:([^\\.]+)\\.([^\\(]+)(.*)").matcher(arg);
-							if (matcher.find()) {
-								if (! matcher.group(1).equals("invokeStatic")) {
-									stack.pop();
-								}
-								methodVisitor.visitMethodInsn(
-										matcher.group(1).equals("invokeSpecial")? INVOKESPECIAL:
-												matcher.group(1).equals("invokeStatic")? INVOKESTATIC:
-														INVOKEVIRTUAL,
-										matcher.group(2),
-										matcher.group(3),
-										matcher.group(4)
-								);
-								String returnVal = matcher.group(4).split("\\)")[1];
-								String param = matcher.group(4).substring(0, matcher.group(4).length()-returnVal.length());
-								LinkedHashMap<String, Integer> paramArgs = new LinkedHashMap<String, Integer>();
-								addParamsAsVariables(param, paramArgs, new LinkedHashMap<String, String>(), source, index);
-								for (String key : paramArgs.keySet().toArray(new String[0])) {
-									stack.pop();
-								}
-								stack.push(returnVal);
-							} else {
-								Main.error("invlid invoke at line: "+getLineIndex(source, index));
-							}
-						} else if (arg.contains("(") && arg.contains(")")) {
-							String varName = arg.split("\\.")[0];
-							if (arg.contains(".")) {
-								String varArgs = arg.substring(varName.length()+1);
-								arg = varName;
-								if (Main.debug) {
-									System.out.println("{");
-									tabSize ++;
-								}
-								if (varArgs.contains("(") && varArgs.contains(")")) {
-									String[] varTypes = varArgs.substring(varArgs.indexOf('(')+1, varArgs.lastIndexOf(')')).split("\\,\\s*");
-									ArrayList<String> argTypes = new ArrayList<String>();
-									for (int j = varTypes.length-1 ; j >= 0 ; j --) {
-										if (! varTypes[j].equals("")) {
-											getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), varTypes[j]);
-											argTypes.add(stack.peek());
-										}
-									}
-									String methodName = varArgs.substring(0, varArgs.indexOf('('));
+							} else if (arg.equals("threadEnv")) {
+								methodVisitor.visitMethodInsn(INVOKESTATIC, "Frosty", "getClassLoaderList", "()[Ljava/lang/String;");
+								stack.push("[Ljava/lang/String;");
+							} else if (arg.equals("getFuncs")) {
+								stack.pop();
+								methodVisitor.visitMethodInsn(INVOKESTATIC, "Frosty", "getDeclaredMethods", "(Ljava/lang/Object;)[Ljava/lang/String;");
+								stack.push("[Ljava/lang/String;");
+							} else if (arg.equals("getName")) {
+								stack.pop();
+								methodVisitor.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "getClass", "()Ljava/lang/Class;");
+								methodVisitor.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Class", "getName", "()Ljava/lang/String;");
+								stack.push("Ljava/lang/String;");
+							} else if (caller == null || ! caller.extraCommands(classWriter, methodVisitor, className, variables, types, index, source)) {
+								Main.error("invalid command at line: "+getLineIndex(source, index));
+								Field f;
+								if ((f = Opcodes.class.getDeclaredField(arg.toUpperCase())) != null) {
+									final Field field = f;
 									try {
-										Class c = Class.forName(arg.replace('/', '.'));
-										String argsString = "";
-										String returnType = "V";
-										String invokeType = "invokeVirtual";
-										int numberOfParams = -1;
-										if (varArgs.startsWith("<init>")) {
-											invokeType = "invokeSpecial";
-											returnType = "V";
-											for (Constructor constructor : c.getConstructors()) {
-												String thisArgsString = "";
-												int thisNumberOfParams = 0;
-												if (argTypes.size() == 0) {
-													//
-												} else {
-													Class<?>[] parameterTypes = constructor.getParameterTypes();
-													for (int j = 0 ; j < parameterTypes.length && j < argTypes.size() ; j ++) {
-														String argTypeName = argTypes.get(j);
-														if (argTypeName.startsWith("L")) {
-															argTypeName = argTypeName.substring(1, argTypeName.length()-1);
-															argTypeName = argTypeName.replace('/', '.');
-														} else if (argTypeName.equals("I")) {
-															argTypeName = "Integer";
-														}
-														Class c1 = Class.forName(argTypeName);
-														Class c2 = null;
-														String typeCanonicalName = parameterTypes[j].getCanonicalName();
-														if (typeCanonicalName.equals("boolean")) {
-															c2 = boolean.class;
-														} else if (typeCanonicalName.equals("char")) {
-															c2 = char.class;
-														} else if (typeCanonicalName.equals("byte")) {
-															c2 = byte.class;
-														} else if (typeCanonicalName.equals("short")) {
-															c2 = short.class;
-														} else if (typeCanonicalName.equals("int")) {
-															c2 = int.class;
-														} else if (typeCanonicalName.equals("float")) {
-															c2 = float.class;
-														} else if (typeCanonicalName.equals("long")) {
-															c2 = long.class;
-														} else if (typeCanonicalName.equals("double")) {
-															c2 = double.class;
-														} else {
-															c2 = Class.forName(typeCanonicalName);
-														}
-														//doTypeCheck(argTypeName, c1);
-														//c1 = getClassForType(argTypeName);
-														//typeCanonicalName = doTypeCheck(typeCanonicalName);
-														//c2 = getClassForType(typeCanonicalName);
-														if (c2.isAssignableFrom(c1)) {
-															thisArgsString += 'L'+typeCanonicalName.replace('.', '/')+';';
-															thisNumberOfParams ++;
-														}
-													}
-												}
-												if (thisNumberOfParams > numberOfParams) {
-													numberOfParams = thisNumberOfParams;
-													argsString = thisArgsString;
-												}
-											}
-										} else {
-											for (Method method : c.getMethods()) {
-												if (method.getName().equals(methodName)) {
-													try {
-														new FileOutputStream(new File("")).write(new byte[0]);
-													} catch (IOException e) {
-														e.printStackTrace();
-													}
-													String thisArgsString = "";
-													int thisNumberOfParams = 0;
-													if (argTypes.size() == 0) {
-														returnType = method.getReturnType().getCanonicalName();
-														if (returnType.equals("void")) {
-															returnType = "V";
-														} else {
-															returnType = 'L'+returnType.replace('.', '/')+';';
-														}
-													} else {
-														Class<?>[] parameterTypes = method.getParameterTypes();
-														for (int j = 0 ; j < parameterTypes.length && j < argTypes.size() ; j ++) {
-															Class c1 = null;
-															String argTypeName = argTypes.get(j);
-															if (argTypeName.startsWith("L")) {
-																argTypeName = argTypeName.substring(1, argTypeName.length()-1);
-																argTypeName = argTypeName.replace('/', '.');
-																c1 = Class.forName(argTypeName);
-															} else if (argTypeName.equals("I")) {
-																c1 = int.class;
-															} else if (argTypeName.equals("Z")) {
-																c1 = boolean.class;
-															}
-															Class c2 = null;
-															String typeCanonicalName = parameterTypes[j].getCanonicalName();
-															if (typeCanonicalName.equals("boolean")) {
-																c2 = boolean.class;
-															} else if (typeCanonicalName.equals("char")) {
-																c2 = char.class;
-															} else if (typeCanonicalName.equals("byte")) {
-																c2 = byte.class;
-															} else if (typeCanonicalName.equals("short")) {
-																c2 = short.class;
-															} else if (typeCanonicalName.equals("int")) {
-																c2 = int.class;
-															} else if (typeCanonicalName.equals("float")) {
-																c2 = float.class;
-															} else if (typeCanonicalName.equals("long")) {
-																c2 = long.class;
-															} else if (typeCanonicalName.equals("double")) {
-																c2 = double.class;
-															} else {
-																c2 = Class.forName(typeCanonicalName);
-															}
-															//doTypeCheck(argTypeName, c1);
-															//c1 = getClassForType(argTypeName);
-															//typeCanonicalName = doTypeCheck(typeCanonicalName);
-															//c2 = getClassForType(typeCanonicalName);
-															if (c2.isAssignableFrom(c1)) {
-																thisArgsString += 'L'+typeCanonicalName.replace('.', '/')+';';
-																thisNumberOfParams ++;
-																returnType = method.getReturnType().getCanonicalName();
-																/*if (returnType.equals("void")) {
-																	returnType = "V";
-																} else {
-																	returnType = 'L'+returnType.replace('.', '/')+';';
-																}*/
-																returnType = doTypeCheck(returnType, imports);
-															}
-														}
-													}
-													if (thisNumberOfParams > numberOfParams) {
-														numberOfParams = thisNumberOfParams;
-														argsString = thisArgsString;
-													}
-												}
-											}
-										}
-										if (numberOfParams != -1) {
-											getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
-													invokeType+':'+arg+'.'+methodName+'('+argsString+')'+returnType
-											);
-										} else {
-											Main.error("Class '"+arg+"' does not contain a method named '"+methodName+"'");
-										}
-									} catch (ClassNotFoundException e) {
+										methodVisitor.visitInsn((Integer) field.get(this));
+										//commands.add("#field# "+field.getName());
+									} catch (IllegalAccessException e) {
 										e.printStackTrace();
 									}
-								} else {
-									getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
-											arg + '.' + varArgs
-									);
-								}
-								if (Main.debug) {
-									tabSize --;
-									System.out.print(times(".   ", tabSize)+"} = ");
-								}
-							} else {
-								getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0),
-										className+'.'+arg
-								);
-							}
-						} else if (arg.startsWith("get")) {
-							Matcher matcher = Pattern.compile("(getStatic|getField)\\:([^\\.]+)\\.([^\\>]+)\\>(.*)").matcher(arg);
-							if (matcher.find()) {
-								if (matcher.group(1).equals("getField")) {
-									stack.pop();
-								}
-								methodVisitor.visitFieldInsn(
-										matcher.group(1).equals("getStatic")? GETSTATIC:
-												GETFIELD,
-										matcher.group(2),
-										matcher.group(3),
-										matcher.group(4)
-								);
-								stack.push(matcher.group(4));
-							} else {
-								Main.error("invlid get at line: "+getLineIndex(source, index));
-							}
-						} else if (arg.contains(".")) {
-							String name = arg.substring(arg.indexOf('.')+1);
-							String type = arg.substring(0, arg.indexOf('.'));
-							if (imports.containsKey(type)) {
-								type = imports.get(type);
-							}
-							try {
-								Class c = Class.forName(type.replace('/', '.'));
-								Field field = c.getField(name);
-								String returnType = field.getType().getCanonicalName().replace('.', '/');
-								if (returnType.equals("int")) {
-									returnType = "I";
-								} else if (returnType.equals("float")) {
-									returnType = "F";
-								} else if (returnType.equals("boolean")) {
-									returnType = "Z";
-								} else if (returnType.equals("double")) {
-									returnType = "D";
-								}
-								if (returnType.length() > 1) {
-									returnType = 'L' + returnType + ';';
-								}//*/
-								//String returnType = field.getType().getCanonicalName();
-								//returnType = doTypeCheck(returnType);
-								methodVisitor.visitFieldInsn(
-										Modifier.isStatic(field.getModifiers())? GETSTATIC:
-												GETFIELD,
-										type,
-										name,
-										returnType
-								);
-								if (! Modifier.isStatic(field.getModifiers())) {
-									stack.pop();
-								}
-								stack.push(returnType);
-							} catch (ClassNotFoundException e) {
-								e.printStackTrace();
-							}
-						} else if (arg.equals("threadEnv")) {
-							methodVisitor.visitMethodInsn(INVOKESTATIC, "Frosty", "getClassLoaderList", "()[Ljava/lang/String;");
-							stack.push("[Ljava/lang/String;");
-						} else if (arg.equals("getFuncs")) {
-							stack.pop();
-							methodVisitor.visitMethodInsn(INVOKESTATIC, "Frosty", "getDeclaredMethods", "(Ljava/lang/Object;)[Ljava/lang/String;");
-							stack.push("[Ljava/lang/String;");
-						} else if (arg.equals("getName")) {
-							stack.pop();
-							methodVisitor.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "getClass", "()Ljava/lang/Class;");
-							methodVisitor.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Class", "getName", "()Ljava/lang/String;");
-							stack.push("Ljava/lang/String;");
-						} else if (caller == null || ! caller.extraCommands(classWriter, methodVisitor, className, variables, types, index, source)) {
-							Main.error("invalid command at line: "+getLineIndex(source, index));
-							Field f;
-							if ((f = Opcodes.class.getDeclaredField(arg.toUpperCase())) != null) {
-								final Field field = f;
-								try {
-									methodVisitor.visitInsn((Integer) field.get(this));
-									//commands.add("#field# "+field.getName());
-								} catch (IllegalAccessException e) {
-									e.printStackTrace();
 								}
 							}
+						} catch (NoSuchFieldException e) {
+							e.printStackTrace();
 						}
-					} catch (NoSuchFieldException e) {
-						e.printStackTrace();
-					}
-					if (! stack.empty() && stack.peek().equals("V")) {
-						stack.pop();
-					}
-					if (Main.debug && ! arg.equals("")) {
-						if (! arg.equals("}")) {
-							System.out.println(stack.toString());
+						if (! stack.empty() && stack.peek().equals("V")) {
+							stack.pop();
+						}
+						if (Main.debug && ! arg.equals("")) {
+							if (! arg.equals("}")) {
+								System.out.println(stack.toString());
+							}
 						}
 					}
 				}
@@ -825,191 +894,84 @@ public class SimpleScriptCompiler implements Opcodes {
 		}
 	}
 
-	private Class getClassForType(String typeCanonicalName) {
-		Class c2 = null;
-		try {
-			if (typeCanonicalName.equals("Z")) {
-				c2 = boolean.class;
-			} else if (typeCanonicalName.equals("C")) {
-				c2 = char.class;
-			} else if (typeCanonicalName.equals("B")) {
-				c2 = byte.class;
-			} else if (typeCanonicalName.equals("S")) {
-				c2 = short.class;
-			} else if (typeCanonicalName.equals("I")) {
-				c2 = int.class;
-			} else if (typeCanonicalName.equals("F")) {
-				c2 = float.class;
-			} else if (typeCanonicalName.equals("J")) {
-				c2 = long.class;
-			} else if (typeCanonicalName.equals("D")) {
-				c2 = double.class;
-			} else if (typeCanonicalName.equals("[Z")) {
-				c2 = boolean[].class;
-			} else if (typeCanonicalName.equals("[C")) {
-				c2 = char[].class;
-			} else if (typeCanonicalName.equals("[B")) {
-				c2 = byte[].class;
-			} else if (typeCanonicalName.equals("[S")) {
-				c2 = short[].class;
-			} else if (typeCanonicalName.equals("[I")) {
-				c2 = int[].class;
-			} else if (typeCanonicalName.equals("[F")) {
-				c2 = float[].class;
-			} else if (typeCanonicalName.equals("[J")) {
-				c2 = long[].class;
-			} else if (typeCanonicalName.equals("[D")) {
-				c2 = double[].class;
-			} else if (typeCanonicalName.startsWith("[")) {
-				c2 = Class.forName(typeCanonicalName.substring(2,typeCanonicalName.length()-1).replace('/', '.'));
-			} else {
-				c2 = Class.forName(typeCanonicalName.substring(1,typeCanonicalName.length()-1).replace('/', '.'));
-			}
-		} catch (ClassNotFoundException e) {
-			e.printStackTrace();
+	/**
+	 * get the list of args including multi-line args
+	 * @param source
+	 * @param index
+	 * @return
+	 */
+	private String[] getArgs(final String source, AtomicInteger index) {
+		ArrayList<String> args = new ArrayList<String>();
+		while (source.charAt(index.get()) == '\n') {
+			index.getAndIncrement();
 		}
-		return c2;
-	}
-
-	private String doTypeCheck(String typeCanonicalName, LinkedHashMap<String, String> imports) {
-		if (typeCanonicalName.equals("void")) {
-			typeCanonicalName = "V";
-		} else if (typeCanonicalName.equals("boolean")) {
-			typeCanonicalName = "Z";
-		} else if (typeCanonicalName.equals("char")) {
-			typeCanonicalName = "C";
-		} else if (typeCanonicalName.equals("byte")) {
-			typeCanonicalName = "B";
-		} else if (typeCanonicalName.equals("short")) {
-			typeCanonicalName = "S";
-		} else if (typeCanonicalName.equals("int")) {
-			typeCanonicalName = "I";
-		} else if (typeCanonicalName.equals("float")) {
-			typeCanonicalName = "F";
-		} else if (typeCanonicalName.equals("long")) {
-			typeCanonicalName = "J";
-		} else if (typeCanonicalName.equals("double")) {
-			typeCanonicalName = "D";
-		} else if (typeCanonicalName.equals("boolean[]")) {
-			typeCanonicalName = "[Z";
-		} else if (typeCanonicalName.equals("char[]")) {
-			typeCanonicalName = "[C";
-		} else if (typeCanonicalName.equals("byte[]")) {
-			typeCanonicalName = "[B";
-		} else if (typeCanonicalName.equals("short[]")) {
-			typeCanonicalName = "[S";
-		} else if (typeCanonicalName.equals("int[]")) {
-			typeCanonicalName = "[I";
-		} else if (typeCanonicalName.equals("float[]")) {
-			typeCanonicalName = "[F";
-		} else if (typeCanonicalName.equals("long[]")) {
-			typeCanonicalName = "[J";
-		} else if (typeCanonicalName.equals("double[]")) {
-			typeCanonicalName = "[D";
-		} else if (typeCanonicalName.endsWith("]")) {
-			String modName = typeCanonicalName.substring(0,
-					typeCanonicalName.indexOf(' ') != -1? typeCanonicalName.indexOf(' '):
-							typeCanonicalName.indexOf('[')
-			);
-			if (imports.containsKey(modName)) {
-				typeCanonicalName = "[L"+imports.get(modName)+';';
-			} else {
-				typeCanonicalName = "[L"+typeCanonicalName.replace('.', '/').substring(0, typeCanonicalName.indexOf('['))+';';
+		outerWhile:
+		while (index.get() < source.length()) {
+			while ((source.charAt(index.get()) < '!' || source.charAt(index.get()) > '~') && source.charAt(index.get()) != '\n') {
+				index.getAndIncrement();
+				if (index.get() >= source.length()) {
+					break outerWhile;
+				}
 			}
-		} else {
-			if (imports.containsKey(typeCanonicalName)) {
-				typeCanonicalName = 'L'+imports.get(typeCanonicalName)+';';
-			} else {
-				typeCanonicalName = 'L'+typeCanonicalName.replace('.', '/')+';';
+			if (source.charAt(index.get()) == '\n') {
+				break;
 			}
+			int start = index.get();
+			while (index.get() < source.length() && source.charAt(index.get()) >= '!' && source.charAt(index.get()) <= '~' && source.charAt(index.get()) != '\n') {
+				if (source.charAt(index.get()) == '\"' || source.charAt(index.get()) == '\'') {
+					char matchChar = source.charAt(index.get());
+					while (index.get() < source.length()) {
+						if (source.charAt(index.get()) == matchChar && source.charAt(index.get()-1) != '\\') {
+							break;
+						}
+						index.getAndIncrement();
+					}
+				}
+				if (source.charAt(index.get()) == '(' || source.charAt(index.get()) == '{') {
+					char matchChar = source.charAt(index.get());
+					char endChar = matchChar == '(' ? ')' : '}';
+					Stack<Integer> matches = new Stack<Integer>();
+					//matches.push(index.get());
+					do {
+						if (source.charAt(index.get()) == matchChar) {
+							matches.push(index.get());
+						} else if (source.charAt(index.get()) == endChar) {
+							matches.pop();
+						}
+						index.getAndIncrement();
+					} while (matches.size() > 0 && index.get() < source.length());
+					index.getAndDecrement();
+				}
+				index.getAndIncrement();
+				if (index.get() > source.length()) {
+					Main.error("Unmatched enclosing in class!");
+				}
+			}
+			args.add(source.substring(start, index.get()));
 		}
-		return typeCanonicalName;
-	}
+		return args.toArray(new String[0]);
+	}//*/
 
 	/**
 	 * this function will split the current line into a list of arguments
-	 * @param classWriter
+	 *
 	 * @param methodVisitor
-	 * @param className
 	 * @param variables
 	 * @param types
 	 * @param stack
 	 * @param labels
 	 * @param blocks
-	 * @param line
+	 * @param args
 	 * @param index
 	 * @param source
 	 * @return
 	 */
-	private String[] argsCheck(ClassWriter classWriter, MethodVisitor methodVisitor, String className, LinkedHashMap<String, Integer> variables, LinkedHashMap<String, String> types, Stack<String> stack, LinkedHashMap<String, Label> labels, Stack<Label> blocks, String line, AtomicInteger index, String source) {
+	private String[] argsCheck(MethodVisitor methodVisitor, LinkedHashMap<String, Integer> variables, LinkedHashMap<String, String> types, Stack<String> stack, LinkedHashMap<String, Label> labels, Stack<Block> blocks, String[] args, AtomicInteger index, String source) {
 		ArrayList<String> argsList = new ArrayList<String>();
+		argsList.addAll(Arrays.asList(args));
+
 		int start = 0;
 		int end = 0;
-		while (start < line.length()) {
-			for (;
-			     start < line.length() && (""+line.charAt(start)).matches("\\s");
-			     start ++
-					);
-			if (start < line.length()) {
-				if (line.charAt(start) == '$') {
-					for ( end = start + 1 ; end < line.length() ; end ++) {
-						if (line.charAt(end) == ' ') {
-							break;
-						}
-						if (line.charAt(end) == '(') {
-							Stack<Character> pairs = new Stack<Character>();
-							pairs.push('(');
-							end ++;
-							while (end < line.length() && pairs.size() > 0) {
-								if (line.charAt(end) == '(') {
-									pairs.push('(');
-								} else if (line.charAt(end) == ')') {
-									pairs.pop();
-								}
-								end ++;
-							}
-							break;
-						}
-					}
-					end --;
-				} else if (line.charAt(start) == '\"') {
-					for (
-							end = start + 1;
-							end < line.length() && ! ((""+line.charAt(end)).matches("\"") && (end == line.length() || line.charAt(end-1) != '\\'));
-							end ++
-							);
-				} else if (line.charAt(start) == '\'') {
-					for (
-							end = start + 1;
-							end < line.length() && ! ((""+line.charAt(end)).matches("\'") && (end == line.length() || line.charAt(end-1) != '\\'));
-							end ++
-							);
-				} else if (line.charAt(start) == '(') {
-					Stack<Character> pairs = new Stack<Character>();
-					pairs.push('(');
-					end = start + 1;
-					while (end < line.length() && pairs.size() > 0) {
-						if (line.charAt(end) == '(') {
-							pairs.push('(');
-						} else if (line.charAt(end) == ')') {
-							pairs.pop();
-						}
-						end ++;
-					}
-					end --;
-				} else {
-					for (
-							end = start + 1;
-							end < line.length() && ! (""+line.charAt(end)).matches("\\s");
-							end ++
-							);
-					end --;
-				}
-				//if (end == line.length()-1) end --;
-				argsList.add(line.substring(start, end+1).trim());
-				start = end + 1;
-			}
-		}
 		new SimpleScriptOperatorPreCompiler().correct(
 				argsList
 		);
@@ -1052,20 +1014,19 @@ public class SimpleScriptCompiler implements Opcodes {
 
 	/**
 	 * this function will check if the current line represents a function , loop, import, etc declaration.
-	 * @param classWriter
-	 * @param methodVisitor
-	 * @param className
-	 * @param variables
-	 * @param types
-	 * @param stack
-	 * @param labels
-	 * @param blocks
-	 * @param line
-	 * @param index
-	 * @param source
+	 *
+	 * @param /methodVisitor
+	 * @param /variables
+	 * @param /types
+	 * @param /stack
+	 * @param /labels
+	 * @param /blocks
+	 * @param /line
+	 * @param /index
+	 * @param /source
 	 * @return
 	 */
-	private boolean preArgsCheck(ClassWriter classWriter, MethodVisitor methodVisitor, String className, LinkedHashMap<String, String> imports, LinkedHashMap<String, Integer> variables, LinkedHashMap<String, String> types, Stack<String> stack, LinkedHashMap<String, Label> labels, Stack<Label> blocks, String line, AtomicInteger index, String source) {
+	/*private boolean preArgsCheck(MethodVisitor methodVisitor, LinkedHashMap<String, Integer> variables, LinkedHashMap<String, String> types, Stack<String> stack, LinkedHashMap<String, Label> labels, Stack<Label> blocks, String[] args, AtomicInteger index, String source) {
 		Matcher matcher = Pattern.compile(
 				"^\\s*import\\s+([^\\s]+)"
 		).matcher(line);
@@ -1116,11 +1077,11 @@ public class SimpleScriptCompiler implements Opcodes {
 					Label forEndLabel = new Label();
 					blocks.push(forEndLabel);
 					tabSize ++;
-					getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), firstPart);
+					getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0), firstPart);
 					methodVisitor.visitLabel(forStartLabel);
-					getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), forCheck);
-					getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, index, source);
-					getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, new AtomicInteger(0), lastPart);
+					getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0), forCheck);
+					getbody(methodVisitor, variables, types, stack, labels, blocks, index, source);
+					getbody(methodVisitor, variables, types, stack, labels, blocks, new AtomicInteger(0), lastPart);
 					methodVisitor.visitJumpInsn(GOTO, forStartLabel);
 					methodVisitor.visitLabel(forEndLabel);
 					tabSize --;
@@ -1138,25 +1099,25 @@ public class SimpleScriptCompiler implements Opcodes {
 						index.set(
 								(index.get()-line.length())+matcher.regionStart()+(matcher.group(0).length())-1
 						);
-						makeFunc(classWriter, className, permission, visibility, returnType, name, params, imports, variables, index, source);
+						makeFunc(permission, visibility, returnType, name, params, variables, index, source);
 						return true;
 					} else {
 						return false;
 					}
 				}
-			//if (index.get() >= source.length() || source.charAt(index.get()) == '}') {
+				//if (index.get() >= source.length() || source.charAt(index.get()) == '}') {
 				//break;
-			//}
+				//}
 			}
 		}
-	}
+	}//*/
 
-	private String doParamTypeCheck(String params, LinkedHashMap<String, String> imports) {
+	private String doParamTypeCheck(String params) {
 		String out = "";
 		String[] types = params.substring(1, params.length()-1).split("\\s+,\\s+");
 		for (String type : types) {
 			if (! type.equals("")) {
-				out += doTypeCheck(type, imports);
+				out += doTypeCheck(type);
 			}
 		}
 		return '('+out+')';
@@ -1164,8 +1125,6 @@ public class SimpleScriptCompiler implements Opcodes {
 
 	/**
 	 * Creates a new method in a class.
-	 * @param classWriter
-	 * @param className
 	 * @param permission
 	 * @param visibility
 	 * @param returnType
@@ -1175,7 +1134,7 @@ public class SimpleScriptCompiler implements Opcodes {
 	 * @param index
 	 * @param source
 	 */
-	private void makeFunc(ClassWriter classWriter, String className, String permission, String visibility, String returnType, String name, String params, LinkedHashMap<String, String> imports, LinkedHashMap<String, Integer> classVariables, AtomicInteger index, String source) {
+	private void makeFunc(String permission, String visibility, String returnType, String name, String params, LinkedHashMap<String, Integer> classVariables, AtomicInteger index, String source) {
 		MethodVisitor methodVisitor = classWriter.visitMethod(
 				(
 						permission.equals("public")? ACC_PUBLIC:
@@ -1200,14 +1159,14 @@ public class SimpleScriptCompiler implements Opcodes {
 		addParamsAsVariables(params, variables, types, source, index);
 		Stack<String> stack = new Stack<String>();
 		LinkedHashMap<String, Label> labels = new LinkedHashMap<String, Label>();
-		Stack<Label> blocks = new Stack<Label>();
+		Stack<Block> blocks = new Stack<Block>();
 		if (Main.debug) {
 			System.out.println(
 					times(".   ", tabSize)+"func "+name+" {"
 			);
 			tabSize ++;
 		}
-		getbody(classWriter, methodVisitor, className, imports, variables, types, stack, labels, blocks, index, source);
+		getbody(methodVisitor, variables, types, stack, labels, blocks, index, source);
 		if (Main.debug) {
 			tabSize --;
 			System.out.println(
@@ -1276,6 +1235,107 @@ public class SimpleScriptCompiler implements Opcodes {
 				types.put(key, before+types.get(key));
 			}
 		}
+	}
+
+	private Class getClassForType(String typeCanonicalName) {
+		Class c2 = null;
+		try {
+			if (typeCanonicalName.equals("Z")) {
+				c2 = boolean.class;
+			} else if (typeCanonicalName.equals("C")) {
+				c2 = char.class;
+			} else if (typeCanonicalName.equals("B")) {
+				c2 = byte.class;
+			} else if (typeCanonicalName.equals("S")) {
+				c2 = short.class;
+			} else if (typeCanonicalName.equals("I")) {
+				c2 = int.class;
+			} else if (typeCanonicalName.equals("F")) {
+				c2 = float.class;
+			} else if (typeCanonicalName.equals("J")) {
+				c2 = long.class;
+			} else if (typeCanonicalName.equals("D")) {
+				c2 = double.class;
+			} else if (typeCanonicalName.equals("[Z")) {
+				c2 = boolean[].class;
+			} else if (typeCanonicalName.equals("[C")) {
+				c2 = char[].class;
+			} else if (typeCanonicalName.equals("[B")) {
+				c2 = byte[].class;
+			} else if (typeCanonicalName.equals("[S")) {
+				c2 = short[].class;
+			} else if (typeCanonicalName.equals("[I")) {
+				c2 = int[].class;
+			} else if (typeCanonicalName.equals("[F")) {
+				c2 = float[].class;
+			} else if (typeCanonicalName.equals("[J")) {
+				c2 = long[].class;
+			} else if (typeCanonicalName.equals("[D")) {
+				c2 = double[].class;
+			} else if (typeCanonicalName.startsWith("[")) {
+				c2 = Class.forName(typeCanonicalName.substring(2,typeCanonicalName.length()-1).replace('/', '.'));
+			} else {
+				c2 = Class.forName(typeCanonicalName.substring(1,typeCanonicalName.length()-1).replace('/', '.'));
+			}
+		} catch (ClassNotFoundException e) {
+			e.printStackTrace();
+		}
+		return c2;
+	}
+
+	private String doTypeCheck(String typeCanonicalName) {
+		if (typeCanonicalName.equals("void")) {
+			typeCanonicalName = "V";
+		} else if (typeCanonicalName.equals("boolean")) {
+			typeCanonicalName = "Z";
+		} else if (typeCanonicalName.equals("char")) {
+			typeCanonicalName = "C";
+		} else if (typeCanonicalName.equals("byte")) {
+			typeCanonicalName = "B";
+		} else if (typeCanonicalName.equals("short")) {
+			typeCanonicalName = "S";
+		} else if (typeCanonicalName.equals("int")) {
+			typeCanonicalName = "I";
+		} else if (typeCanonicalName.equals("float")) {
+			typeCanonicalName = "F";
+		} else if (typeCanonicalName.equals("long")) {
+			typeCanonicalName = "J";
+		} else if (typeCanonicalName.equals("double")) {
+			typeCanonicalName = "D";
+		} else if (typeCanonicalName.equals("boolean[]")) {
+			typeCanonicalName = "[Z";
+		} else if (typeCanonicalName.equals("char[]")) {
+			typeCanonicalName = "[C";
+		} else if (typeCanonicalName.equals("byte[]")) {
+			typeCanonicalName = "[B";
+		} else if (typeCanonicalName.equals("short[]")) {
+			typeCanonicalName = "[S";
+		} else if (typeCanonicalName.equals("int[]")) {
+			typeCanonicalName = "[I";
+		} else if (typeCanonicalName.equals("float[]")) {
+			typeCanonicalName = "[F";
+		} else if (typeCanonicalName.equals("long[]")) {
+			typeCanonicalName = "[J";
+		} else if (typeCanonicalName.equals("double[]")) {
+			typeCanonicalName = "[D";
+		} else if (typeCanonicalName.endsWith("]")) {
+			String modName = typeCanonicalName.substring(0,
+					typeCanonicalName.indexOf(' ') != -1? typeCanonicalName.indexOf(' '):
+							typeCanonicalName.indexOf('[')
+			);
+			if (imports.containsKey(modName)) {
+				typeCanonicalName = "[L"+imports.get(modName)+';';
+			} else {
+				typeCanonicalName = "[L"+typeCanonicalName.replace('.', '/').substring(0, typeCanonicalName.indexOf('['))+';';
+			}
+		} else {
+			if (imports.containsKey(typeCanonicalName)) {
+				typeCanonicalName = 'L'+imports.get(typeCanonicalName)+';';
+			} else {
+				typeCanonicalName = 'L'+typeCanonicalName.replace('.', '/')+';';
+			}
+		}
+		return typeCanonicalName;
 	}
 
 	private int getLineIndex(String source, AtomicInteger index) {
